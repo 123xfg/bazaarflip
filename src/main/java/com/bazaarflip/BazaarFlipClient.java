@@ -30,9 +30,9 @@ public class BazaarFlipClient implements ClientModInitializer {
 
 	// Tunable filters - lower MIN_WEEKLY_VOLUME to see rarer/riskier items, raise
 	// MAX_MARGIN_PERCENT to allow bigger (often stale) margins through.
-	private static final double MIN_WEEKLY_VOLUME = 2000;
+	private static final double MIN_WEEKLY_VOLUME = 1000;
 	private static final double MAX_MARGIN_PERCENT = 40;
-	private static final int OVERLAY_ROW_COUNT = 8;
+	private static final int OVERLAY_ROW_COUNT = 15;
 
 	// As of Minecraft 1.21.9, keybinding categories are structured objects
 	// rather than plain translation-key strings, so this has to be created
