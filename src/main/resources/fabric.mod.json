@@ -1,0 +1,24 @@
+{
+	"schemaVersion": 1,
+	"id": "bazaarflip",
+	"version": "${version}",
+	"name": "BazaarFlip",
+	"description": "Finds profitable Hypixel Skyblock Bazaar flips and shows them in chat/HUD.",
+	"authors": ["You"],
+	"contact": {},
+	"license": "MIT",
+	"icon": "assets/bazaarflip/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.bazaarflip.BazaarFlipClient"
+		]
+	},
+	"mixins": [],
+	"depends": {
+		"fabricloader": ">=0.18.0",
+		"fabric-api": "*",
+		"minecraft": "~1.21.11",
+		"java": ">=17"
+	}
+}
