@@ -14,6 +14,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.List;
@@ -33,6 +34,12 @@ public class BazaarFlipClient implements ClientModInitializer {
 	private static final double MAX_MARGIN_PERCENT = 40;
 	private static final int OVERLAY_ROW_COUNT = 8;
 
+	// As of Minecraft 1.21.9, keybinding categories are structured objects
+	// rather than plain translation-key strings, so this has to be created
+	// once and reused instead of passing "category.bazaarflip" directly.
+	private static final KeyBinding.Category KEYBIND_CATEGORY =
+			KeyBinding.Category.create(Identifier.of("bazaarflip", "main"));
+
 	private static KeyBinding toggleOverlayKey;
 
 	@Override
@@ -44,7 +51,7 @@ public class BazaarFlipClient implements ClientModInitializer {
 				"key.bazaarflip.toggle",
 				InputUtil.Type.KEYSYM,
 				GLFW.GLFW_KEY_B,
-				"category.bazaarflip"
+				KEYBIND_CATEGORY
 		));
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
