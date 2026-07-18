@@ -41,7 +41,7 @@ public class BazaarOverlay {
 
 	private static final int MARGIN_X = 8; // distance from the window's RIGHT edge
 	private static final int MARGIN_Y = 40;
-	private static final int PANEL_WIDTH = 210;
+	private static final int PANEL_WIDTH = 260;
 	private static final int ROW_HEIGHT = 11;
 	private static final int PADDING = 5;
 
@@ -51,6 +51,7 @@ public class BazaarOverlay {
 	private static final int NAME_COLOR = 0xFFE8E8E8;
 	private static final int MARGIN_COLOR = 0xFF55DD55;   // green
 	private static final int RATE_COLOR = 0xFF7FB8FF;     // light blue
+	private static final int VOLUME_COLOR = 0xFFCCA0FF;   // light purple, units/hr
 	private static final int STALE_COLOR = 0xFFAA5555;    // red, shown if data is old
 
 	/** Recomputed once per bazaar refresh (~30s), not per frame - render() just reads this. */
@@ -112,7 +113,7 @@ public class BazaarOverlay {
 		context.drawText(client.textRenderer, title, textX, textY, stale ? STALE_COLOR : TITLE_COLOR, true);
 		textY += ROW_HEIGHT;
 
-		context.drawText(client.textRenderer, "Item              Margin   /hr", textX, textY, 0xFF999999, false);
+		context.drawText(client.textRenderer, "Item              Margin  Vol/hr   $/hr", textX, textY, 0xFF999999, false);
 		textY += ROW_HEIGHT;
 
 		if (flips.isEmpty()) {
@@ -122,10 +123,10 @@ public class BazaarOverlay {
 
 		for (BazaarProduct p : flips) {
 			String name = shorten(p.productId.replace('_', ' '), 15);
-			String row = String.format("%-15s %6s %6s", name, formatCoins(p.getMargin()), formatCoins(p.getEstimatedProfitPerHour()));
 			context.drawText(client.textRenderer, name, textX, textY, NAME_COLOR, false);
 			context.drawText(client.textRenderer, formatCoins(p.getMargin()), textX + 100, textY, MARGIN_COLOR, false);
-			context.drawText(client.textRenderer, formatCoins(p.getEstimatedProfitPerHour()) + "/h", textX + 150, textY, RATE_COLOR, false);
+			context.drawText(client.textRenderer, formatUnits(p.getEstimatedVolumePerHour()) + "/h", textX + 145, textY, VOLUME_COLOR, false);
+			context.drawText(client.textRenderer, formatCoins(p.getEstimatedProfitPerHour()) + "/h", textX + 200, textY, RATE_COLOR, false);
 			textY += ROW_HEIGHT;
 		}
 	}
@@ -142,6 +143,14 @@ public class BazaarOverlay {
 	}
 
 	private static String formatCoins(double value) {
+		double abs = Math.abs(value);
+		if (abs >= 1_000_000) return String.format("%.1fM", value / 1_000_000.0);
+		if (abs >= 1_000) return String.format("%.1fK", value / 1_000.0);
+		return String.format("%.0f", value);
+	}
+
+	/** Same K/M shorthand as formatCoins, but for raw unit counts (no decimals below 1K). */
+	private static String formatUnits(double value) {
 		double abs = Math.abs(value);
 		if (abs >= 1_000_000) return String.format("%.1fM", value / 1_000_000.0);
 		if (abs >= 1_000) return String.format("%.1fK", value / 1_000.0);
