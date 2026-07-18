@@ -11,13 +11,14 @@ public class FlipFinder {
 
 	/**
 	 * Returns the top N flips sorted by absolute margin, filtering out
-	 * illiquid items (weekly volume below minVolume) and items with a
-	 * margin percent above maxMarginPercent (huge %s on obscure items are
-	 * usually stale/manipulated data, not real opportunities).
+	 * illiquid items (fewer than minVolumePerHour units actually trading per
+	 * hour) and items with a margin percent above maxMarginPercent (huge %s
+	 * on obscure items are usually stale/manipulated data, not real
+	 * opportunities).
 	 */
 	public static List<BazaarProduct> topFlipsByMargin(List<BazaarProduct> products, int limit,
-														double minVolume, double maxMarginPercent) {
-		return filtered(products, minVolume, maxMarginPercent)
+														double minVolumePerHour, double maxMarginPercent) {
+		return filtered(products, minVolumePerHour, maxMarginPercent)
 				.sorted(Comparator.comparingDouble(BazaarProduct::getMargin).reversed())
 				.limit(limit)
 				.collect(Collectors.toList());
@@ -28,8 +29,8 @@ public class FlipFinder {
 	 * Better for finding efficient use of a small amount of capital.
 	 */
 	public static List<BazaarProduct> topFlipsByMarginPercent(List<BazaarProduct> products, int limit,
-																double minVolume, double maxMarginPercent) {
-		return filtered(products, minVolume, maxMarginPercent)
+																double minVolumePerHour, double maxMarginPercent) {
+		return filtered(products, minVolumePerHour, maxMarginPercent)
 				.sorted(Comparator.comparingDouble(BazaarProduct::getMarginPercent).reversed())
 				.limit(limit)
 				.collect(Collectors.toList());
@@ -42,18 +43,24 @@ public class FlipFinder {
 	 * "biggest margin" alone is misleading if the item barely trades.
 	 */
 	public static List<BazaarProduct> topFlipsByProfitPerHour(List<BazaarProduct> products, int limit,
-																double minVolume, double maxMarginPercent) {
-		return filtered(products, minVolume, maxMarginPercent)
+																double minVolumePerHour, double maxMarginPercent) {
+		return filtered(products, minVolumePerHour, maxMarginPercent)
 				.sorted(Comparator.comparingDouble(BazaarProduct::getEstimatedProfitPerHour).reversed())
 				.limit(limit)
 				.collect(Collectors.toList());
 	}
 
+	/**
+	 * minVolumePerHour is checked against actual units/hour, not weekly
+	 * volume - an item can clear the old weekly-volume bar while still only
+	 * moving a handful of units an hour, which isn't something you can
+	 * realistically flip on repeatedly within a play session.
+	 */
 	private static Stream<BazaarProduct> filtered(List<BazaarProduct> products,
-												   double minVolume, double maxMarginPercent) {
+												   double minVolumePerHour, double maxMarginPercent) {
 		return products.stream()
 				.filter(p -> p.getMargin() > 0)
-				.filter(p -> p.getWeeklyVolume() >= minVolume)
+				.filter(p -> p.getEstimatedVolumePerHour() >= minVolumePerHour)
 				.filter(p -> p.getMarginPercent() <= maxMarginPercent);
 	}
 }
