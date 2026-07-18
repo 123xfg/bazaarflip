@@ -28,9 +28,14 @@ public class BazaarFlipClient implements ClientModInitializer {
 
 	private static final long REFRESH_INTERVAL_MS = 30_000; // Hypixel updates bazaar roughly every 20-30s
 
-	// Tunable filters - lower MIN_WEEKLY_VOLUME to see rarer/riskier items, raise
-	// MAX_MARGIN_PERCENT to allow bigger (often stale) margins through.
-	private static final double MIN_WEEKLY_VOLUME = 1000;
+	// Tunable filters - lower MIN_VOLUME_PER_HOUR to see rarer/riskier items,
+	// raise MAX_MARGIN_PERCENT to allow bigger (often stale) margins through.
+	// MIN_VOLUME_PER_HOUR of 20 means an item needs to plausibly trade at
+	// least ~20 units an hour to be considered fillable within a session -
+	// items only moving single digits/hour get excluded even if their
+	// theoretical margin*volume math looks huge, since you'd likely never
+	// actually see that volume come through.
+	private static final double MIN_VOLUME_PER_HOUR = 20;
 	private static final double MAX_MARGIN_PERCENT = 40;
 	private static final int OVERLAY_ROW_COUNT = 15;
 
@@ -116,13 +121,13 @@ public class BazaarFlipClient implements ClientModInitializer {
 
 	private static List<BazaarProduct> topFlips(List<BazaarProduct> snapshot, int count, String sortBy) {
 		if (sortBy.equalsIgnoreCase("percent")) {
-			return FlipFinder.topFlipsByMarginPercent(snapshot, count, MIN_WEEKLY_VOLUME, MAX_MARGIN_PERCENT);
+			return FlipFinder.topFlipsByMarginPercent(snapshot, count, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT);
 		}
 		if (sortBy.equalsIgnoreCase("margin")) {
-			return FlipFinder.topFlipsByMargin(snapshot, count, MIN_WEEKLY_VOLUME, MAX_MARGIN_PERCENT);
+			return FlipFinder.topFlipsByMargin(snapshot, count, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT);
 		}
 		// default: "hourly" - balances margin against how fast the item actually trades
-		return FlipFinder.topFlipsByProfitPerHour(snapshot, count, MIN_WEEKLY_VOLUME, MAX_MARGIN_PERCENT);
+		return FlipFinder.topFlipsByProfitPerHour(snapshot, count, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT);
 	}
 
 	private void maybeRefreshCache() {
