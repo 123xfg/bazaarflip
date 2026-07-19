@@ -51,6 +51,21 @@ public class FlipFinder {
 	}
 
 	/**
+	 * Returns the top N flips sorted purely by units/hour, ignoring margin
+	 * size entirely (beyond requiring a positive margin to be a real flip
+	 * at all). Useful for a "fastest movement" view - highest-volume items
+	 * you can cycle through quickly and repeatedly, even if each individual
+	 * flip's margin is small.
+	 */
+	public static List<BazaarProduct> topFlipsByVolume(List<BazaarProduct> products, int limit,
+														 double minVolumePerHour, double maxMarginPercent) {
+		return filtered(products, minVolumePerHour, maxMarginPercent)
+				.sorted(Comparator.comparingDouble(BazaarProduct::getEstimatedVolumePerHour).reversed())
+				.limit(limit)
+				.collect(Collectors.toList());
+	}
+
+	/**
 	 * minVolumePerHour is checked against actual units/hour, not weekly
 	 * volume - an item can clear the old weekly-volume bar while still only
 	 * moving a handful of units an hour, which isn't something you can
