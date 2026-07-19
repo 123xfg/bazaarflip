@@ -64,6 +64,16 @@ public class BazaarApi {
 			int buyOrders = quickStatus.get("buyOrders").getAsInt();
 			int sellOrders = quickStatus.get("sellOrders").getAsInt();
 
+			// sell_summary/buy_summary are the live order book - the actual
+			// quantities other players currently have posted at each price
+			// tier. This is what caps how much you could realistically fill
+			// right now, as opposed to buyMovingWeek/sellMovingWeek which
+			// are a market-wide 7-day total that assumes you capture 100%
+			// of everyone's trading activity - unrealistic for anything
+			// with real competition.
+			double sellOrderBookDepth = sumOrderBookQuantities(productObj.getAsJsonArray("sell_summary"));
+			double buyOrderBookDepth = sumOrderBookQuantities(productObj.getAsJsonArray("buy_summary"));
+
 			products.add(new BazaarProduct(
 					productId,
 					buyPrice,
@@ -71,10 +81,21 @@ public class BazaarApi {
 					buyMovingWeek,
 					sellMovingWeek,
 					buyOrders,
-					sellOrders
+					sellOrders,
+					sellOrderBookDepth,
+					buyOrderBookDepth
 			));
 		}
 
 		return products;
+	}
+
+	private static double sumOrderBookQuantities(com.google.gson.JsonArray summary) {
+		if (summary == null) return 0;
+		double total = 0;
+		for (int i = 0; i < summary.size(); i++) {
+			total += summary.get(i).getAsJsonObject().get("amount").getAsDouble();
+		}
+		return total;
 	}
 }
