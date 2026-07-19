@@ -48,6 +48,20 @@ public class BazaarFlipClient implements ClientModInitializer {
 	// quickly and repeatedly, not just anything that clears the basic bar.
 	private static final double FAST_MIN_VOLUME_PER_HOUR = 1000;
 
+	// Used only by the "Profit" tab. That tab ranks by raw margin, which on
+	// its own says nothing about whether the item actually trades - without
+	// this floor, items with 0 real volume/hr but a big theoretical margin
+	// (nobody's actually buying/selling them) show up at the top with "0/h".
+	// This just requires *some* real movement (~100 units/hr) before an item
+	// is allowed to compete on margin alone.
+	private static final double PROFIT_MIN_VOLUME_PER_HOUR = 100;
+
+	// Used only by the "Fast" tab, in addition to FAST_MIN_VOLUME_PER_HOUR.
+	// Fast is ranked by $/hr, so a high-volume item with a tiny per-unit
+	// margin can still rank well - this filters those out so every entry is
+	// worth at least 2k margin per unit, not just fast turnover.
+	private static final double FAST_MIN_MARGIN = 2000;
+
 	// Set this to your actual Catacombs level. Items requiring a higher
 	// level than this (per RequirementTable) get filtered out entirely,
 	// since you literally can't trade them yet regardless of how good the
@@ -172,18 +186,25 @@ public class BazaarFlipClient implements ClientModInitializer {
 	/**
 	 * Builds the four overlay tabs from one snapshot:
 	 *   ALL    - balanced profit/hr ranking (margin x movement), the general-purpose default.
-	 *   FAST   - same profit/hr ranking, but requires much higher movement first,
-	 *            so only items you can realistically cycle through quickly qualify.
-	 *   PROFIT - pure margin, ignoring movement entirely - "most profit regardless of movement".
-	 *   SPEED  - pure units/hour, ignoring margin size - "fastest movement".
+	 *   FAST   - same profit/hr ranking, but requires much higher movement first and a
+	 *            minimum per-unit margin, so only items you can realistically cycle
+	 *            through quickly *and* that are actually worth flipping qualify
+	 *            ("fastest flips with the most profit").
+	 *   PROFIT - pure margin, requiring only a modest amount of real movement first
+	 *            so 0/hr theoretical-only items don't crowd out real flips
+	 *            ("most profit regardless of movement").
+	 *   SPEED  - pure units/hour, ignoring margin size - "fastest movement, full stop".
 	 */
 	private static Map<Tab, List<BazaarProduct>> buildTabFlips(List<BazaarProduct> snapshot) {
 		List<BazaarProduct> tradable = filterTradable(snapshot);
+		List<BazaarProduct> fastCandidates = tradable.stream()
+				.filter(p -> p.getMargin() >= FAST_MIN_MARGIN)
+				.collect(Collectors.toList());
 
 		Map<Tab, List<BazaarProduct>> byTab = new EnumMap<>(Tab.class);
 		byTab.put(Tab.ALL, FlipFinder.topFlipsByProfitPerHour(tradable, OVERLAY_ROW_COUNT, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT));
-		byTab.put(Tab.FAST, FlipFinder.topFlipsByProfitPerHour(tradable, OVERLAY_ROW_COUNT, FAST_MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT));
-		byTab.put(Tab.PROFIT, FlipFinder.topFlipsByMargin(tradable, OVERLAY_ROW_COUNT, 0, MAX_MARGIN_PERCENT));
+		byTab.put(Tab.FAST, FlipFinder.topFlipsByProfitPerHour(fastCandidates, OVERLAY_ROW_COUNT, FAST_MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT));
+		byTab.put(Tab.PROFIT, FlipFinder.topFlipsByMargin(tradable, OVERLAY_ROW_COUNT, PROFIT_MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT));
 		byTab.put(Tab.SPEED, FlipFinder.topFlipsByVolume(tradable, OVERLAY_ROW_COUNT, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT));
 		return byTab;
 	}
