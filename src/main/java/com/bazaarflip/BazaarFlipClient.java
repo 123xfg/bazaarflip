@@ -3,6 +3,7 @@ package com.bazaarflip;
 import com.bazaarflip.api.BazaarApi;
 import com.bazaarflip.api.BazaarProduct;
 import com.bazaarflip.overlay.BazaarOverlay;
+import com.bazaarflip.overlay.BazaarOverlay.Tab;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.api.ClientModInitializer;
@@ -17,8 +18,11 @@ import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 public class BazaarFlipClient implements ClientModInitializer {
 
@@ -38,6 +42,25 @@ public class BazaarFlipClient implements ClientModInitializer {
 	private static final double MIN_VOLUME_PER_HOUR = 20;
 	private static final double MAX_MARGIN_PERCENT = 40;
 	private static final int OVERLAY_ROW_COUNT = 15;
+
+	// Used only by the "Fast" tab - a much stricter movement floor than the
+	// default, so that tab only shows items you can genuinely cycle through
+	// quickly and repeatedly, not just anything that clears the basic bar.
+	private static final double FAST_MIN_VOLUME_PER_HOUR = 1000;
+
+	// Set this to your actual Catacombs level. Items requiring a higher
+	// level than this (per RequirementTable) get filtered out entirely,
+	// since you literally can't trade them yet regardless of how good the
+	// numbers look.
+	private static final int PLAYER_CATACOMBS_LEVEL = 0;
+
+	// Filters out items you can't meaningfully afford. Uses live Purse+Bank
+	// read straight off the Hypixel sidebar (see PlayerEconomy) rather than
+	// a manually typed number. MIN_AFFORDABLE_UNITS of 8 means: don't
+	// suggest a flip unless you could buy at least 8 units of it right now
+	// with what you have - buying 1-2 units of something isn't worth the
+	// clicks even if the margin looks good.
+	private static final int MIN_AFFORDABLE_UNITS = 8;
 
 	// As of Minecraft 1.21.9, keybinding categories are structured objects
 	// rather than plain translation-key strings, so this has to be created
@@ -63,6 +86,7 @@ public class BazaarFlipClient implements ClientModInitializer {
 			while (toggleOverlayKey.wasPressed()) {
 				BazaarOverlay.toggle();
 			}
+			PlayerEconomy.refresh(client);
 			maybeRefreshCache();
 		});
 
@@ -119,15 +143,49 @@ public class BazaarFlipClient implements ClientModInitializer {
 		}
 	}
 
+	/** Catacombs-requirement + affordability filtering, shared by every ranking (chat command and all overlay tabs). */
+	private static List<BazaarProduct> filterTradable(List<BazaarProduct> snapshot) {
+		double totalCoins = PlayerEconomy.getTotalCoins();
+
+		return snapshot.stream()
+				.filter(p -> RequirementTable.requiredCatacombsLevel(p.productId) <= PLAYER_CATACOMBS_LEVEL)
+				// totalCoins <= 0 means we haven't successfully read the sidebar yet
+				// (e.g. not in-game, or Purse/Bank lines weren't found this tick) -
+				// in that case, don't filter anything out rather than hiding everything.
+				.filter(p -> totalCoins <= 0 || p.instantSellPrice * MIN_AFFORDABLE_UNITS <= totalCoins)
+				.collect(Collectors.toList());
+	}
+
 	private static List<BazaarProduct> topFlips(List<BazaarProduct> snapshot, int count, String sortBy) {
+		List<BazaarProduct> tradable = filterTradable(snapshot);
+
 		if (sortBy.equalsIgnoreCase("percent")) {
-			return FlipFinder.topFlipsByMarginPercent(snapshot, count, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT);
+			return FlipFinder.topFlipsByMarginPercent(tradable, count, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT);
 		}
 		if (sortBy.equalsIgnoreCase("margin")) {
-			return FlipFinder.topFlipsByMargin(snapshot, count, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT);
+			return FlipFinder.topFlipsByMargin(tradable, count, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT);
 		}
 		// default: "hourly" - balances margin against how fast the item actually trades
-		return FlipFinder.topFlipsByProfitPerHour(snapshot, count, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT);
+		return FlipFinder.topFlipsByProfitPerHour(tradable, count, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT);
+	}
+
+	/**
+	 * Builds the four overlay tabs from one snapshot:
+	 *   ALL    - balanced profit/hr ranking (margin x movement), the general-purpose default.
+	 *   FAST   - same profit/hr ranking, but requires much higher movement first,
+	 *            so only items you can realistically cycle through quickly qualify.
+	 *   PROFIT - pure margin, ignoring movement entirely - "most profit regardless of movement".
+	 *   SPEED  - pure units/hour, ignoring margin size - "fastest movement".
+	 */
+	private static Map<Tab, List<BazaarProduct>> buildTabFlips(List<BazaarProduct> snapshot) {
+		List<BazaarProduct> tradable = filterTradable(snapshot);
+
+		Map<Tab, List<BazaarProduct>> byTab = new EnumMap<>(Tab.class);
+		byTab.put(Tab.ALL, FlipFinder.topFlipsByProfitPerHour(tradable, OVERLAY_ROW_COUNT, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT));
+		byTab.put(Tab.FAST, FlipFinder.topFlipsByProfitPerHour(tradable, OVERLAY_ROW_COUNT, FAST_MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT));
+		byTab.put(Tab.PROFIT, FlipFinder.topFlipsByMargin(tradable, OVERLAY_ROW_COUNT, 0, MAX_MARGIN_PERCENT));
+		byTab.put(Tab.SPEED, FlipFinder.topFlipsByVolume(tradable, OVERLAY_ROW_COUNT, MIN_VOLUME_PER_HOUR, MAX_MARGIN_PERCENT));
+		return byTab;
 	}
 
 	private void maybeRefreshCache() {
@@ -157,11 +215,10 @@ public class BazaarFlipClient implements ClientModInitializer {
 					LAST_UPDATED.set(System.currentTimeMillis());
 
 					// Recomputed once per refresh (~30s), not per frame - the overlay just
-					// reads whatever this last produced. This is what makes it "constantly
-					// updating": as soon as a better flip appears in a fresh snapshot, the
-					// next render (already-open Bazaar screen or the next one you open)
-					// shows it without any extra action from you.
-					BazaarOverlay.updateFlips(topFlips(products, OVERLAY_ROW_COUNT, "hourly"));
+					// reads whatever this last produced per tab. This is what makes it
+					// "constantly updating": as soon as a better flip appears in a fresh
+					// snapshot, the next render shows it without any extra action from you.
+					BazaarOverlay.updateFlips(buildTabFlips(products));
 				})
 				.exceptionally(ex -> {
 					sendMessage("§cFailed to fetch bazaar data: " + ex.getMessage());
