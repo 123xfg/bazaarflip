@@ -7,6 +7,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
+import net.minecraft.client.input.MouseInput;
 
 import java.util.EnumMap;
 import java.util.List;
@@ -23,16 +24,13 @@ import java.util.regex.Pattern;
  * to the vanilla Bazaar GUI underneath, the same way overlay mods like
  * SkyCofl do.
  *
- * UNVERIFIED WITHOUT A REAL BUILD: this was written in a sandbox with no
- * access to Minecraft/Fabric's Maven repos, so none of it has been
- * test-compiled. The mouse-event handling (ScreenMouseEvents.allowMouseClick
- * / allowMouseRelease) is the newest/least-verified part of this file - if
- * it doesn't compile, double check those functional interfaces' exact
- * parameter types against the Fabric API javadoc for your fabric_version.
- * The drag logic itself just updates an offset inside render() using the
- * mouseX/mouseY render() already receives each frame, rather than polling
- * the mouse directly, so it should need the same coordinate space as the
- * existing tab click-detection (which was already working).
+ * The mouse-click handlers (ScreenMouseEvents.allowMouseClick / allowMouseRelease)
+ * were verified against the actual Fabric API 0.141.1+1.21.11 source: as of
+ * Minecraft 1.21.11 those callbacks only receive (Screen, MouseInput) - no
+ * mouseX/mouseY - so the click position is read from the value render() cached
+ * last frame (lastMouseX/lastMouseY) rather than from the click event itself.
+ * The drag logic uses that same per-frame mouseX/mouseY from render(), so both
+ * paths share one coordinate source.
  */
 public class BazaarOverlay {
 
@@ -95,6 +93,14 @@ public class BazaarOverlay {
 	private static int dragStartOffsetY;
 	private static int lastPanelHeight = 60; // updated every render(), used for click hit-testing/clamping
 
+	// As of Fabric API 0.141.1+1.21.11 (Minecraft 1.21.11), ScreenMouseEvents'
+	// AllowMouseClick/AllowMouseRelease callbacks only receive (Screen, MouseInput) -
+	// MouseInput just wraps the button + modifier keys, it no longer carries the
+	// cursor position. So we cache the position from render() (updated every frame,
+	// same source the drag logic already uses) and read it back in the click handlers.
+	private static double lastMouseX = 0;
+	private static double lastMouseY = 0;
+
 	/** Call once from onInitializeClient(). */
 	public static void register() {
 		ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
@@ -102,8 +108,12 @@ public class BazaarOverlay {
 
 			ScreenEvents.afterRender(screen).register(BazaarOverlay::render);
 
-			ScreenMouseEvents.allowMouseClick(screen).register((scr, mouseX, mouseY, button) -> {
+			ScreenMouseEvents.allowMouseClick(screen).register((scr, context) -> {
 				if (!ENABLED.get()) return true;
+
+				double mouseX = lastMouseX;
+				double mouseY = lastMouseY;
+				int button = context.button();
 
 				Tab clicked = tabAt(scr, mouseX, mouseY);
 				if (clicked != null) {
@@ -123,8 +133,8 @@ public class BazaarOverlay {
 				return true; // outside the panel entirely - let the click through as normal
 			});
 
-			ScreenMouseEvents.allowMouseRelease(screen).register((scr, mouseX, mouseY, button) -> {
-				if (dragging && button == 0) {
+			ScreenMouseEvents.allowMouseRelease(screen).register((scr, context) -> {
+				if (dragging && context.button() == 0) {
 					dragging = false;
 					return false;
 				}
@@ -162,6 +172,8 @@ public class BazaarOverlay {
 			offsetX = dragStartOffsetX + (int) Math.round(mouseX - dragStartMouseX);
 			offsetY = dragStartOffsetY + (int) Math.round(mouseY - dragStartMouseY);
 		}
+		lastMouseX = mouseX;
+		lastMouseY = mouseY;
 
 		List<BazaarProduct> flips = TAB_FLIPS.get().getOrDefault(SELECTED_TAB.get(), List.of());
 		MinecraftClient client = MinecraftClient.getInstance();
