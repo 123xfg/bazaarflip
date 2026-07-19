@@ -2,12 +2,15 @@ package com.bazaarflip.overlay;
 
 import com.bazaarflip.api.BazaarProduct;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import net.fabricmc.fabric.api.client.screen.v1.ScreenMouseEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
@@ -15,51 +18,82 @@ import java.util.regex.Pattern;
 /**
  * Draws a small always-on panel to the right of the screen, listing the
  * current best flips, whenever any Bazaar-titled screen is open. It does not
- * open its own screen or grab input - it just paints on top of the vanilla
- * Bazaar GUI you already have open, the same way overlay mods like SkyCofl do.
+ * open its own screen or grab input beyond its own title bar (drag to move)
+ * and tab row (click to switch) - clicks anywhere else pass straight through
+ * to the vanilla Bazaar GUI underneath, the same way overlay mods like
+ * SkyCofl do.
  *
  * UNVERIFIED WITHOUT A REAL BUILD: this was written in a sandbox with no
  * access to Minecraft/Fabric's Maven repos, so none of it has been
- * test-compiled. The two things most likely to need small fixes on your
- * mapping/version:
- *   - DrawContext method names (fill / drawText) - these have been stable
- *     across recent 1.20.x-1.21.x, but double check against the Yarn
- *     javadoc for whatever build you land on.
- *   - ScreenEvents.afterRender's callback parameter order/types - confirm
- *     against Fabric API's ScreenEvents class for your fabric_version.
- *
- * Deliberately does NOT try to read the vanilla GUI's own pixel position
- * (that requires a mixin accessor for HandledScreen's protected x/y fields,
- * which differs more across versions than anything else here). Instead it
- * just anchors to a fixed margin from the game window's right edge, which
- * lands to the right of the GUI for any centered container screen - simpler
- * and far less likely to break on a version bump.
+ * test-compiled. The mouse-event handling (ScreenMouseEvents.allowMouseClick
+ * / allowMouseRelease) is the newest/least-verified part of this file - if
+ * it doesn't compile, double check those functional interfaces' exact
+ * parameter types against the Fabric API javadoc for your fabric_version.
+ * The drag logic itself just updates an offset inside render() using the
+ * mouseX/mouseY render() already receives each frame, rather than polling
+ * the mouse directly, so it should need the same coordinate space as the
+ * existing tab click-detection (which was already working).
  */
 public class BazaarOverlay {
 
+	/** Which ranking the panel currently shows. Click a tab in-game to switch. */
+	public enum Tab {
+		ALL("All"),
+		FAST("Fast"),
+		PROFIT("Profit"),
+		SPEED("Speed");
+
+		public final String label;
+
+		Tab(String label) {
+			this.label = label;
+		}
+	}
+
 	private static final Pattern BAZAAR_TITLE = Pattern.compile("(?i)bazaar");
 
-	private static final int MARGIN_X = 8; // distance from the window's RIGHT edge
-	private static final int MARGIN_Y = 40;
+	private static final int DEFAULT_MARGIN_X = 8; // distance from the window's RIGHT edge, before any drag offset
+	private static final int DEFAULT_MARGIN_Y = 40;
 	private static final int PANEL_WIDTH = 260;
 	private static final int ROW_HEIGHT = 11;
+	private static final int TAB_ROW_HEIGHT = 13;
 	private static final int PADDING = 5;
+	private static final int TAB_GAP = 4;
 
 	private static final int BG_COLOR = 0xC0101010;       // semi-transparent dark background
 	private static final int BORDER_COLOR = 0xFF3A3A3A;
 	private static final int TITLE_COLOR = 0xFFFFD54A;    // gold
+	private static final int TITLE_DRAGGING_COLOR = 0xFFFFFFFF; // white while actively being dragged, as a cue
 	private static final int NAME_COLOR = 0xFFE8E8E8;
 	private static final int MARGIN_COLOR = 0xFF55DD55;   // green
 	private static final int RATE_COLOR = 0xFF7FB8FF;     // light blue
 	private static final int VOLUME_COLOR = 0xFFCCA0FF;   // light purple, units/hr
 	private static final int STALE_COLOR = 0xFFAA5555;    // red, shown if data is old
+	private static final int TAB_TEXT_COLOR = 0xFFCCCCCC;
+	private static final int TAB_TEXT_SELECTED_COLOR = 0xFF000000;
+	private static final int TAB_BG_SELECTED_COLOR = 0xFFFFD54A; // gold, matches title
+	private static final int TAB_BG_COLOR = 0xFF2A2A2A;
 
-	/** Recomputed once per bazaar refresh (~30s), not per frame - render() just reads this. */
-	private static final AtomicReference<List<BazaarProduct>> TOP_FLIPS = new AtomicReference<>(List.of());
+	/** Recomputed once per bazaar refresh (~30s), not per frame - one ranked list per tab. */
+	private static final AtomicReference<Map<Tab, List<BazaarProduct>>> TAB_FLIPS =
+			new AtomicReference<>(new EnumMap<>(Tab.class));
+	private static final AtomicReference<Tab> SELECTED_TAB = new AtomicReference<>(Tab.ALL);
 	private static final AtomicReference<Long> LAST_UPDATED_MILLIS = new AtomicReference<>(0L);
 	private static final AtomicBoolean ENABLED = new AtomicBoolean(true);
 
 	private static final long STALE_AFTER_MS = 90_000; // if data's this old, flag it instead of pretending it's fresh
+
+	// Drag state. Minecraft's client-side render/input handling is single
+	// threaded, so plain fields (not Atomic*) are fine here - everything
+	// touching these runs on the client thread.
+	private static int offsetX = 0;
+	private static int offsetY = 0;
+	private static boolean dragging = false;
+	private static double dragStartMouseX;
+	private static double dragStartMouseY;
+	private static int dragStartOffsetX;
+	private static int dragStartOffsetY;
+	private static int lastPanelHeight = 60; // updated every render(), used for click hit-testing/clamping
 
 	/** Call once from onInitializeClient(). */
 	public static void register() {
@@ -67,12 +101,41 @@ public class BazaarOverlay {
 			if (!isBazaarScreen(screen)) return;
 
 			ScreenEvents.afterRender(screen).register(BazaarOverlay::render);
+
+			ScreenMouseEvents.allowMouseClick(screen).register((scr, mouseX, mouseY, button) -> {
+				if (!ENABLED.get()) return true;
+
+				Tab clicked = tabAt(scr, mouseX, mouseY);
+				if (clicked != null) {
+					SELECTED_TAB.set(clicked);
+					return false; // swallow the click so it doesn't hit the Bazaar GUI underneath
+				}
+
+				if (button == 0 && isOnTitleBar(scr, mouseX, mouseY)) {
+					dragging = true;
+					dragStartMouseX = mouseX;
+					dragStartMouseY = mouseY;
+					dragStartOffsetX = offsetX;
+					dragStartOffsetY = offsetY;
+					return false; // swallow so the Bazaar GUI doesn't also react to this click
+				}
+
+				return true; // outside the panel entirely - let the click through as normal
+			});
+
+			ScreenMouseEvents.allowMouseRelease(screen).register((scr, mouseX, mouseY, button) -> {
+				if (dragging && button == 0) {
+					dragging = false;
+					return false;
+				}
+				return true;
+			});
 		});
 	}
 
-	/** Called from BazaarFlipClient right after every successful bazaar refresh. */
-	public static void updateFlips(List<BazaarProduct> topFlips) {
-		TOP_FLIPS.set(topFlips);
+	/** Called from BazaarFlipClient right after every successful bazaar refresh, one ranked list per tab. */
+	public static void updateFlips(Map<Tab, List<BazaarProduct>> flipsByTab) {
+		TAB_FLIPS.set(flipsByTab);
 		LAST_UPDATED_MILLIS.set(System.currentTimeMillis());
 	}
 
@@ -92,15 +155,25 @@ public class BazaarOverlay {
 	private static void render(Screen screen, DrawContext context, int mouseX, int mouseY, float tickDelta) {
 		if (!ENABLED.get()) return;
 
-		List<BazaarProduct> flips = TOP_FLIPS.get();
+		// Update the drag offset first, using the mouse position render()
+		// already receives this frame - this is what makes dragging feel
+		// live/continuous without needing to poll the mouse separately.
+		if (dragging) {
+			offsetX = dragStartOffsetX + (int) Math.round(mouseX - dragStartMouseX);
+			offsetY = dragStartOffsetY + (int) Math.round(mouseY - dragStartMouseY);
+		}
+
+		List<BazaarProduct> flips = TAB_FLIPS.get().getOrDefault(SELECTED_TAB.get(), List.of());
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client.textRenderer == null) return;
 
 		int rowCount = Math.max(flips.size(), 1);
-		int panelHeight = PADDING * 2 + ROW_HEIGHT /* title */ + ROW_HEIGHT /* header */ + rowCount * ROW_HEIGHT;
+		int panelHeight = PADDING * 2 + ROW_HEIGHT /* title */ + TAB_ROW_HEIGHT /* tabs */
+				+ ROW_HEIGHT /* column header */ + rowCount * ROW_HEIGHT;
+		lastPanelHeight = panelHeight;
 
-		int x = screen.width - MARGIN_X - PANEL_WIDTH;
-		int y = MARGIN_Y;
+		int x = panelX(screen);
+		int y = panelY(screen, panelHeight);
 
 		context.fill(x, y, x + PANEL_WIDTH, y + panelHeight, BG_COLOR);
 		drawBorder(context, x, y, PANEL_WIDTH, panelHeight, BORDER_COLOR);
@@ -109,9 +182,13 @@ public class BazaarOverlay {
 		int textY = y + PADDING;
 
 		boolean stale = System.currentTimeMillis() - LAST_UPDATED_MILLIS.get() > STALE_AFTER_MS;
-		String title = "BazaarFlip - Best Flips" + (stale ? " (stale)" : "");
-		context.drawText(client.textRenderer, title, textX, textY, stale ? STALE_COLOR : TITLE_COLOR, true);
+		String title = "BazaarFlip - Best Flips" + (stale ? " (stale)" : "") + (dragging ? " [drag]" : "");
+		int titleColor = dragging ? TITLE_DRAGGING_COLOR : (stale ? STALE_COLOR : TITLE_COLOR);
+		context.drawText(client.textRenderer, title, textX, textY, titleColor, true);
 		textY += ROW_HEIGHT;
+
+		drawTabs(context, client, textX, textY);
+		textY += TAB_ROW_HEIGHT;
 
 		context.drawText(client.textRenderer, "Item              Margin  Vol/hr   $/hr", textX, textY, 0xFF999999, false);
 		textY += ROW_HEIGHT;
@@ -129,6 +206,66 @@ public class BazaarOverlay {
 			context.drawText(client.textRenderer, formatCoins(p.getEstimatedProfitPerHour()) + "/h", textX + 200, textY, RATE_COLOR, false);
 			textY += ROW_HEIGHT;
 		}
+	}
+
+	/** Default anchor (top-right corner) plus whatever the panel has been dragged by, clamped so it can't be dragged fully off-window. */
+	private static int panelX(Screen screen) {
+		int x = screen.width - DEFAULT_MARGIN_X - PANEL_WIDTH + offsetX;
+		return Math.max(0, Math.min(x, screen.width - PANEL_WIDTH));
+	}
+
+	private static int panelY(Screen screen, int panelHeight) {
+		int y = DEFAULT_MARGIN_Y + offsetY;
+		return Math.max(0, Math.min(y, screen.height - panelHeight));
+	}
+
+	/** True if the click landed on the title row (the drag handle), as opposed to the tab row or the flip list below it. */
+	private static boolean isOnTitleBar(Screen screen, double mouseX, double mouseY) {
+		int x = panelX(screen);
+		int y = panelY(screen, lastPanelHeight);
+		return mouseX >= x && mouseX <= x + PANEL_WIDTH
+				&& mouseY >= y && mouseY <= y + PADDING + ROW_HEIGHT;
+	}
+
+	private static void drawTabs(DrawContext context, MinecraftClient client, int startX, int y) {
+		int x = startX;
+		for (Tab tab : Tab.values()) {
+			int textWidth = client.textRenderer.getWidth(tab.label);
+			int boxWidth = textWidth + 8;
+			boolean selected = SELECTED_TAB.get() == tab;
+
+			context.fill(x, y, x + boxWidth, y + TAB_ROW_HEIGHT - 1, selected ? TAB_BG_SELECTED_COLOR : TAB_BG_COLOR);
+			context.drawText(client.textRenderer, tab.label, x + 4, y + 2,
+					selected ? TAB_TEXT_SELECTED_COLOR : TAB_TEXT_COLOR, false);
+
+			x += boxWidth + TAB_GAP;
+		}
+	}
+
+	/**
+	 * Hit-tests a click against the current tab bar. Recomputes the exact
+	 * same geometry drawTabs() used last render, using the CURRENT
+	 * (possibly dragged) panel position rather than the fixed default one.
+	 */
+	private static Tab tabAt(Screen screen, double mouseX, double mouseY) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client.textRenderer == null) return null;
+
+		int panelX = panelX(screen);
+		int tabY = panelY(screen, lastPanelHeight) + PADDING + ROW_HEIGHT; // title row, then tabs
+		int x = panelX + PADDING;
+
+		if (mouseY < tabY || mouseY > tabY + TAB_ROW_HEIGHT - 1) return null;
+
+		for (Tab tab : Tab.values()) {
+			int textWidth = client.textRenderer.getWidth(tab.label);
+			int boxWidth = textWidth + 8;
+			if (mouseX >= x && mouseX <= x + boxWidth) {
+				return tab;
+			}
+			x += boxWidth + TAB_GAP;
+		}
+		return null;
 	}
 
 	private static void drawBorder(DrawContext context, int x, int y, int w, int h, int color) {
