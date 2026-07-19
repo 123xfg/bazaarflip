@@ -18,9 +18,18 @@ public class BazaarProduct {
 	public final int buyOrders;
 	public final int sellOrders;
 
+	// Live order book depth - total units currently posted at all visible
+	// price tiers on each side. Hypixel only exposes the top handful of
+	// tiers, so this understates true depth somewhat, but it's a much more
+	// realistic "what's actually available right now" number than a
+	// 7-day market-wide average.
+	public final double sellOrderBookDepth;
+	public final double buyOrderBookDepth;
+
 	public BazaarProduct(String productId, double instantBuyPrice, double instantSellPrice,
 						  double buyMovingWeek, double sellMovingWeek,
-						  int buyOrders, int sellOrders) {
+						  int buyOrders, int sellOrders,
+						  double sellOrderBookDepth, double buyOrderBookDepth) {
 		this.productId = productId;
 		this.instantBuyPrice = instantBuyPrice;
 		this.instantSellPrice = instantSellPrice;
@@ -28,6 +37,8 @@ public class BazaarProduct {
 		this.sellMovingWeek = sellMovingWeek;
 		this.buyOrders = buyOrders;
 		this.sellOrders = sellOrders;
+		this.sellOrderBookDepth = sellOrderBookDepth;
+		this.buyOrderBookDepth = buyOrderBookDepth;
 	}
 
 	/** Raw margin if you place a sell order at instantBuyPrice and a buy order at instantSellPrice. */
@@ -51,9 +62,24 @@ public class BazaarProduct {
 	 * book (not just sit posted). Uses the smaller of the two moving-week
 	 * volumes since a flip needs BOTH a buy order to fill and a sell order
 	 * to fill, so the slower side of the book is the real bottleneck.
+	 * <p>
+	 * This is then capped against the live order book depth - the actual
+	 * number of units currently posted at visible price tiers. Weekly
+	 * volume alone assumes you personally capture the entire market's
+	 * activity, every hour, forever; the order book depth check keeps that
+	 * from producing wildly inflated numbers on items where huge weekly
+	 * volume comes from a handful of large trades rather than a genuinely
+	 * liquid, continuously-refilling market (e.g. cheap essence items
+	 * bought in huge bulk occasionally, not steadily).
 	 */
 	public double getEstimatedVolumePerHour() {
-		return getWeeklyVolume() / (7.0 * 24.0);
+		double weeklyDerivedRate = getWeeklyVolume() / (7.0 * 24.0);
+		double liveBookDepth = Math.min(sellOrderBookDepth, buyOrderBookDepth);
+		// liveBookDepth of 0 usually just means the API returned an empty
+		// summary for a very thin/rare item - don't let that zero out an
+		// otherwise-valid weekly estimate.
+		if (liveBookDepth <= 0) return weeklyDerivedRate;
+		return Math.min(weeklyDerivedRate, liveBookDepth);
 	}
 
 	/**
