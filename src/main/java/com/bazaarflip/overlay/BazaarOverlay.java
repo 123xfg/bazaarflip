@@ -202,7 +202,10 @@ public class BazaarOverlay {
 		drawTabs(context, client, textX, textY);
 		textY += TAB_ROW_HEIGHT;
 
-		context.drawText(client.textRenderer, "Item              Margin  Vol/hr   $/hr", textX, textY, 0xFF999999, false);
+		context.drawText(client.textRenderer, "Item", textX, textY, 0xFF999999, false);
+		context.drawText(client.textRenderer, "Margin", textX + 100, textY, 0xFF999999, false);
+		context.drawText(client.textRenderer, "Vol/hr", textX + 145, textY, 0xFF999999, false);
+		context.drawText(client.textRenderer, "$/hr", textX + 200, textY, 0xFF999999, false);
 		textY += ROW_HEIGHT;
 
 		if (flips.isEmpty()) {
