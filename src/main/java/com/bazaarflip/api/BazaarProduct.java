@@ -10,6 +10,16 @@ package com.bazaarflip.api;
  * is the spread a flipper profits from.
  */
 public class BazaarProduct {
+	// Hypixel deducts this tax from the proceeds of every Bazaar sale (both
+	// instant-sells and sell offers that fill) - it does NOT apply to the
+	// buying side of a flip. Base rate is 1.25%; the "Bazaar Flipper"
+	// Community Center perk can reduce it to 1.125% (level 1) or 1% (level
+	// 2, max). Set this to match your actual perk level so margins reflect
+	// what you'd really keep.
+	// Note: some Mayor perks (e.g. Mayor Aura) temporarily raise this to
+	// 2.25% - bump it manually during those if you want accurate numbers.
+	private static final double BAZAAR_TAX_RATE = 0.0125;
+
 	public final String productId;
 	public final double instantBuyPrice;   // buyPrice
 	public final double instantSellPrice;  // sellPrice
@@ -41,9 +51,14 @@ public class BazaarProduct {
 		this.buyOrderBookDepth = buyOrderBookDepth;
 	}
 
-	/** Raw margin if you place a sell order at instantBuyPrice and a buy order at instantSellPrice. */
+	/**
+	 * Net margin if you place a sell order at instantBuyPrice and a buy order
+	 * at instantSellPrice, after the Bazaar sell tax on the proceeds. This is
+	 * what you'd actually keep per unit flipped, not the raw price gap.
+	 */
 	public double getMargin() {
-		return instantBuyPrice - instantSellPrice;
+		double netSellProceeds = instantBuyPrice * (1 - BAZAAR_TAX_RATE);
+		return netSellProceeds - instantSellPrice;
 	}
 
 	/** Margin as a percentage of the sell-order (buy-in) price. */
