@@ -1,5 +1,6 @@
 package com.bazaarflip.overlay;
 
+import com.bazaarflip.BazaarFlipClient;
 import com.bazaarflip.api.BazaarProduct;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenMouseEvents;
@@ -79,6 +80,20 @@ public class BazaarOverlay {
 	private static final AtomicReference<Long> LAST_UPDATED_MILLIS = new AtomicReference<>(0L);
 	private static final AtomicBoolean ENABLED = new AtomicBoolean(true);
 
+	// Per-tab minimum margin, scroll-adjustable in-panel (see allowMouseScroll
+	// below). Every tab ranks by pure Vol/hr - this threshold is what makes
+	// the tabs different from each other: "show me the fastest-moving flips
+	// that still clear at least this much margin per unit." Starting values
+	// are just reasonable defaults, not fixed - scroll on any tab to change it.
+	private static final Map<Tab, Double> MIN_MARGIN = new EnumMap<>(Tab.class);
+	private static final double MARGIN_SCROLL_STEP = 500;
+	static {
+		MIN_MARGIN.put(Tab.ALL, 0.0);
+		MIN_MARGIN.put(Tab.FAST, 2000.0);
+		MIN_MARGIN.put(Tab.PROFIT, 5000.0);
+		MIN_MARGIN.put(Tab.SPEED, 0.0);
+	}
+
 	private static final long STALE_AFTER_MS = 90_000; // if data's this old, flag it instead of pretending it's fresh
 
 	// Drag state. Minecraft's client-side render/input handling is single
@@ -140,6 +155,23 @@ public class BazaarOverlay {
 				}
 				return true;
 			});
+
+			// Unlike the click events above, scroll events on 0.141.1+1.21.11
+			// still take (Screen, mouseX, mouseY, horizontalAmount, verticalAmount)
+			// directly - no MouseInput wrapper here, so this one's unaffected by
+			// that change. Only swallow the scroll (and adjust the threshold) when
+			// the cursor is actually over our panel; otherwise let it through so
+			// the vanilla Bazaar item list underneath keeps scrolling normally.
+			ScreenMouseEvents.allowMouseScroll(screen).register((scr, mouseX, mouseY, horizontalAmount, verticalAmount) -> {
+				if (!ENABLED.get() || !isWithinPanel(scr, mouseX, mouseY)) return true;
+
+				Tab tab = SELECTED_TAB.get();
+				double current = MIN_MARGIN.getOrDefault(tab, 0.0);
+				double updated = Math.max(0, current + Math.signum(verticalAmount) * MARGIN_SCROLL_STEP);
+				MIN_MARGIN.put(tab, updated);
+				BazaarFlipClient.recomputeTabs();
+				return false;
+			});
 		});
 	}
 
@@ -155,6 +187,11 @@ public class BazaarOverlay {
 
 	public static boolean isEnabled() {
 		return ENABLED.get();
+	}
+
+	/** Current scroll-adjusted min-margin threshold for a tab, read by BazaarFlipClient when ranking. */
+	public static double getMinMargin(Tab tab) {
+		return MIN_MARGIN.getOrDefault(tab, 0.0);
 	}
 
 	private static boolean isBazaarScreen(Screen screen) {
@@ -181,7 +218,7 @@ public class BazaarOverlay {
 
 		int rowCount = Math.max(flips.size(), 1);
 		int panelHeight = PADDING * 2 + ROW_HEIGHT /* title */ + TAB_ROW_HEIGHT /* tabs */
-				+ ROW_HEIGHT /* column header */ + rowCount * ROW_HEIGHT;
+				+ ROW_HEIGHT /* min-margin line */ + ROW_HEIGHT /* column header */ + rowCount * ROW_HEIGHT;
 		lastPanelHeight = panelHeight;
 
 		int x = panelX(screen);
@@ -201,6 +238,10 @@ public class BazaarOverlay {
 
 		drawTabs(context, client, textX, textY);
 		textY += TAB_ROW_HEIGHT;
+
+		double minMargin = MIN_MARGIN.getOrDefault(SELECTED_TAB.get(), 0.0);
+		context.drawText(client.textRenderer, "Min margin: " + formatCoins(minMargin) + " (scroll to adjust)", textX, textY, 0xFF999999, false);
+		textY += ROW_HEIGHT;
 
 		context.drawText(client.textRenderer, "Item", textX, textY, 0xFF999999, false);
 		context.drawText(client.textRenderer, "Margin", textX + 100, textY, 0xFF999999, false);
@@ -240,6 +281,14 @@ public class BazaarOverlay {
 		int y = panelY(screen, lastPanelHeight);
 		return mouseX >= x && mouseX <= x + PANEL_WIDTH
 				&& mouseY >= y && mouseY <= y + PADDING + ROW_HEIGHT;
+	}
+
+	/** True if the cursor is anywhere over the panel at all, used to gate scroll handling. */
+	private static boolean isWithinPanel(Screen screen, double mouseX, double mouseY) {
+		int x = panelX(screen);
+		int y = panelY(screen, lastPanelHeight);
+		return mouseX >= x && mouseX <= x + PANEL_WIDTH
+				&& mouseY >= y && mouseY <= y + lastPanelHeight;
 	}
 
 	private static void drawTabs(DrawContext context, MinecraftClient client, int startX, int y) {
